@@ -1,18 +1,17 @@
-# Scanner Pombal (React)
+# Scanner Pombal
 
-Aplicação React responsiva para enquadrar páginas, detectar as bordas, corrigir a perspectiva e limpar o fundo antes de montar um PDF A4 com várias páginas. Após adicionar uma imagem, use **Ajustar** na miniatura para reposicionar os quatro cantos da folha antes de salvar. O processamento automático usa OpenCV.js carregado sob demanda; se a biblioteca não carregar, o app aplica um tratamento local simplificado e usa o quadro como recorte. Pelo botão de compartilhar, navegadores compatíveis abrem o menu nativo de aplicativos para enviar o próprio PDF; em outros navegadores é oferecido o link público ou o download do arquivo. Sem configurar o Supabase, os PDFs ficam disponíveis no navegador onde foram criados. Com o Supabase configurado, o arquivo e os dados do histórico são enviados para a nuvem.
+Scanner de documentos em React. O site enquadra as folhas, corrige a perspectiva, cria PDFs A4 com várias páginas e permite revisar a ordem, remover páginas, ajustar os cantos e restaurar a detecção automática. Há três tratamentos de imagem (documento nítido, escala de cinza e colorido), prévia do PDF, OCR em português com texto copiável e pesquisável, nome e categoria editáveis e compartilhamento do PDF completo ou de páginas selecionadas.
 
 ## Como abrir
 
-Instale uma versão atual do Node.js. Na pasta do projeto, execute `npm install` e depois `npm run dev`; abra no navegador o endereço local informado pelo Vite. Para gerar a versão de publicação, use `npm run build`. Em alguns navegadores, permissões de câmera funcionam melhor quando o site é servido por HTTPS; a opção de escolher fotos também funciona.
+Instale uma versão atual do Node.js. Na pasta do projeto, execute `npm install` e depois `npm run dev`; abra no navegador o endereço local informado pelo Vite. Para gerar a versão de publicação, use `npm run build`. O navegador precisa de HTTPS (ou localhost) para liberar a câmera.
 
-## Conectar o Supabase
+## Supabase com histórico privado
 
 1. Crie um projeto Supabase.
-2. No SQL Editor, execute o conteúdo de `supabase-setup.sql`.
-3. No Storage, crie um bucket chamado `scans` e marque-o como público.
-4. Abra o arquivo `.env` na raiz do projeto e substitua os valores de `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` pelas credenciais do seu projeto. O Vite precisa ser reiniciado após mudanças no `.env`.
+2. No SQL Editor, execute `supabase-setup.sql`. O script cria/atualiza a tabela e configura um bucket privado com políticas que limitam arquivos e registros à conta autenticada.
+3. Configure `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` no `.env` e reinicie o Vite. Use somente a chave pública anon/publishable; nunca coloque uma chave `service_role` no navegador.
+4. Em Supabase → Authentication → URL Configuration, adicione a origem do site (por exemplo `http://localhost:5173` durante o desenvolvimento e o domínio publicado) à lista de redirect URLs.
+5. Crie uma conta por e-mail e entre antes de salvar documentos no Supabase. Se a confirmação de e-mail estiver ativa, confirme o endereço antes de entrar.
 
-O arquivo `.env.example` mostra o formato esperado. A tela de configuração do site também pode ser usada como alternativa quando não há credenciais no `.env`.
-
-**Atenção:** este primeiro protótipo não tem login. O SQL permite leitura pública dos registros e PDFs para que o histórico e links funcionem sem conta. Use apenas para demonstração; antes de armazenar documentos pessoais ou disponibilizar o site a outras pessoas, implemente autenticação e políticas que restrinjam cada arquivo ao seu dono. A chave pública anon pode ficar no navegador; nunca informe uma chave `service_role`.
+Documentos anteriores à ativação das políticas que não tenham `user_id` continuam sem acesso por segurança; associe manualmente os registros à conta correta antes de usá-los. Sem Supabase, os PDFs ficam apenas no armazenamento local do navegador. O OCR carrega Tesseract.js e o idioma português sob demanda; a primeira utilização requer internet. O compartilhamento direto depende do suporte do navegador e do dispositivo.

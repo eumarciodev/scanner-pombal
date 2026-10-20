@@ -10,6 +10,8 @@ const readConfig = () => {
   try { return JSON.parse(localStorage.getItem('folha_supabase') || '{}'); } catch { return {}; }
 };
 const dateLabel = (date) => new Date(date).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
+const imageUrls = new WeakMap();
+const previewImage = (file) => { if (!imageUrls.has(file)) imageUrls.set(file, URL.createObjectURL(file)); return imageUrls.get(file); };
 
 function Icon({ name, size = 20 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round' };
@@ -46,12 +48,26 @@ function App() {
   const [pdfBlob, setPdfBlob] = useState(null);
   const [pdfPreparing, setPdfPreparing] = useState(false);
   const [scanNeedsCheck, setScanNeedsCheck] = useState(false);
+  const [session, setSession] = useState(null);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [scanFilter, setScanFilter] = useState('document');
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [docName, setDocName] = useState('');
+  const [category, setCategory] = useState('Geral');
+  const [ocrText, setOcrText] = useState('');
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [selectedPages, setSelectedPages] = useState([]);
+  const [editingDoc, setEditingDoc] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+  const pdfPreviewUrl = useMemo(() => pdfBlob ? URL.createObjectURL(pdfBlob) : '', [pdfBlob]);
   const fileRef = useRef(null);
   const cameraRef = useRef(null);
   const videoRef = useRef(null);
   const cropSvgRef = useRef(null);
   const client = useMemo(() => config.url && config.key ? createClient(config.url, config.key) : null, [config]);
-  const filtered = docs.filter((doc) => doc.name.toLowerCase().includes(query.toLowerCase()));
+  const filtered = docs.filter((doc) => `${doc.name} ${doc.category || ''} ${doc.ocr_text || ''}`.toLowerCase().includes(query.toLowerCase()));
 
   const notify = (message) => { setToast(message); window.setTimeout(() => setToast(''), 2600); };
   const persist = (next) => { setDocs(next); localStorage.setItem('folha_docs', JSON.stringify(next)); };
@@ -59,31 +75,45 @@ function App() {
   useEffect(() => {
     if (!client) return;
     let active = true;
+    client.auth.getSession().then(({ data }) => { if (active) setSession(data.session); });
+    const { data: authListener } = client.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
+    return () => { active = false; authListener.subscription.unsubscribe(); };
+  }, [client]);
+
+  useEffect(() => {
+    if (!client) return;
+    if (!session) { setDocs([]); return; }
+    let active = true;
     client.from('scanned_documents').select('*').order('created_at', { ascending: false }).then(({ data, error }) => {
       if (!active) return;
-      if (error) { notify('Confira a tabela e as permissões do Supabase.'); return; }
+      if (error) { notify('Confira as políticas privadas do Supabase.'); return; }
       persist(data || []);
     });
     return () => { active = false; };
-  }, [client]);
+  }, [client, session]);
 
   useEffect(() => {
     if (videoRef.current && cameraStream) videoRef.current.srcObject = cameraStream;
     return () => cameraStream?.getTracks().forEach((track) => track.stop());
   }, [cameraStream]);
 
+  useEffect(() => () => { if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl); }, [pdfPreviewUrl]);
+
   useEffect(() => {
     let cancelled = false;
     if (!pages.length) { setPdfBlob(null); setPdfPreparing(false); setScanNeedsCheck(false); return undefined; }
     setPdfPreparing(true);
-    generatePdf(pages).then((result) => { if (!cancelled) { setPdfBlob(result.blob); setScanNeedsCheck(result.needsCheck); } })
+    generatePdf(pages, scanFilter).then((result) => { if (!cancelled) { setPdfBlob(result.blob); setScanNeedsCheck(result.needsCheck); } })
       .catch((error) => { if (!cancelled) { setPdfBlob(null); notify(`Não foi possível preparar o PDF: ${error.message}`); } })
       .finally(() => { if (!cancelled) setPdfPreparing(false); });
     return () => { cancelled = true; };
-  }, [pages]);
+  }, [pages, scanFilter]);
 
   const addFiles = (files) => setPages((current) => [...current, ...Array.from(files).filter((file) => file.type.startsWith('image/'))]);
-  const removePage = (index) => setPages((current) => current.filter((_, i) => i !== index));
+  const removePage = (index) => {
+    setPages((current) => current.filter((_, i) => i !== index));
+    setSelectedPages((current) => current.filter((pageIndex) => pageIndex !== index).map((pageIndex) => pageIndex > index ? pageIndex - 1 : pageIndex));
+  };
   const openCropEditor = (file, index) => {
     const previewUrl = URL.createObjectURL(file);
     const image = new Image();
@@ -123,6 +153,12 @@ function App() {
     closeCropEditor();
     notify('Enquadramento atualizado. O PDF está sendo corrigido.');
   };
+  const restoreAutoCrop = () => {
+    const { file, index } = cropEditor;
+    delete file.scanCorners;
+    setPages((current) => current.map((page, pageIndex) => pageIndex === index ? file : page));
+    closeCropEditor(); notify('Enquadramento automático restaurado.');
+  };
   const openCamera = async () => {
     setCameraError('');
     if (!navigator.mediaDevices?.getUserMedia) { setCameraError('A câmera ao vivo não está disponível neste navegador. Use “Escolher fotos” para selecionar uma imagem.'); setCameraOpen(true); return; }
@@ -154,20 +190,20 @@ function App() {
       setCameraError('');
     }, 'image/jpeg', 0.98);
   };
-  const generatePdf = async (imageFiles) => {
+  const generatePdf = async (imageFiles, filter = scanFilter) => {
     let pdf = null;
     let needsCheck = false;
     for (let index = 0; index < imageFiles.length; index += 1) {
-      const image = await scanPage(imageFiles[index]);
+      const image = await scanPage(imageFiles[index], filter);
       if (!image.detected && !imageFiles[index].scanGuide) needsCheck = true;
       const orientation = image.width > image.height ? 'landscape' : 'portrait';
-      if (!pdf) pdf = new jsPDF({ orientation, unit: 'pt', format: 'a4' });
+      if (!pdf) pdf = new jsPDF({ orientation, unit: 'pt', format: 'a4', compress: true });
       else pdf.addPage('a4', orientation);
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const scale = Math.min(pageWidth / image.width, pageHeight / image.height);
       const width = image.width * scale; const height = image.height * scale;
-      pdf.addImage(image.data, 'JPEG', (pageWidth - width) / 2, (pageHeight - height) / 2, width, height, undefined, 'FAST');
+      pdf.addImage(image.data, 'JPEG', (pageWidth - width) / 2, (pageHeight - height) / 2, width, height, undefined, 'MEDIUM');
     }
     return { blob: pdf.output('blob'), needsCheck };
   };
@@ -176,24 +212,25 @@ function App() {
     if (!pages.length || busy || pdfPreparing) return;
     setBusy(true);
     try {
-      const result = pdfBlob ? { blob: pdfBlob, needsCheck: scanNeedsCheck } : await generatePdf(pages);
+      const result = pdfBlob ? { blob: pdfBlob, needsCheck: scanNeedsCheck } : await generatePdf(pages, scanFilter);
       const blob = result.blob;
       if (result.needsCheck) notify('Não consegui detectar os cantos de uma imagem. Confira o PDF e, se necessário, tire outra foto com a folha inteira visível.');
       const id = crypto.randomUUID();
-      const name = `Documento-${new Date().toISOString().slice(0, 10)}-${String(docs.length + 1).padStart(2, '0')}.pdf`;
+      const name = `${(docName.trim() || `Documento-${new Date().toISOString().slice(0, 10)}-${String(docs.length + 1).padStart(2, '0')}`).replace(/\.pdf$/i, '')}.pdf`;
       const created_at = new Date().toISOString();
-      const item = { id, name, pages: pages.length, created_at };
+      const item = { id, name, category: category.trim() || 'Geral', ocr_text: ocrText, pages: pages.length, created_at };
       if (client) {
-        const storage_path = `${id}.pdf`;
+        if (!session) throw new Error('Entre na sua conta para salvar PDFs privados no Supabase.');
+        const storage_path = `${session.user.id}/${id}.pdf`;
         const { error: uploadError } = await client.storage.from('scans').upload(storage_path, blob, { contentType: 'application/pdf' });
         if (uploadError) throw uploadError;
-        const { data } = client.storage.from('scans').getPublicUrl(storage_path);
-        Object.assign(item, { storage_path, public_url: data.publicUrl });
-        const { error: insertError } = await client.from('scanned_documents').insert({ ...item, public_url: data.publicUrl });
+        Object.assign(item, { storage_path, user_id: session.user.id });
+        const { error: insertError } = await client.from('scanned_documents').insert(item);
         if (insertError) { await client.storage.from('scans').remove([storage_path]); throw insertError; }
       } else item.local_url = URL.createObjectURL(blob);
       persist([item, ...docs]); setPages([]);
-      notify(client ? 'PDF salvo no Supabase!' : 'PDF criado neste dispositivo.');
+      setDocName(''); setCategory('Geral'); setOcrText(''); setSelectedPages([]); setPreviewOpen(false);
+      notify(client ? 'PDF privado salvo no Supabase!' : 'PDF criado neste dispositivo.');
     } catch (error) { console.error(error); notify(`Não foi possível salvar: ${error.message || 'tente novamente'}`); }
     finally { setBusy(false); }
   };
@@ -201,7 +238,50 @@ function App() {
   const finishCamera = async () => {
     if (!pages.length || pdfPreparing || busy) return;
     closeCamera();
-    await makePdf();
+    setPreviewOpen(true);
+  };
+
+  const movePage = (index, direction) => {
+    const target = index + direction;
+    if (target < 0 || target >= pages.length) return;
+    setPages((current) => { const next = [...current]; [next[index], next[target]] = [next[target], next[index]]; return next; });
+    setSelectedPages((current) => current.map((selected) => selected === index ? target : selected === target ? index : selected));
+  };
+  const recognizeText = async () => {
+    if (!pages.length) return;
+    setOcrBusy(true);
+    try {
+      if (!window.Tesseract) await new Promise((resolve, reject) => { const script = document.createElement('script'); script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@6/dist/tesseract.min.js'; script.onload = resolve; script.onerror = () => reject(new Error('Não foi possível carregar o OCR.')); document.head.appendChild(script); });
+      let combined = '';
+      for (const page of pages) {
+        const processed = await scanPage(page, scanFilter);
+        const result = await window.Tesseract.recognize(processed.data, 'por');
+        combined += `${result.data.text.trim()}\n\n`;
+      }
+      setOcrText(combined.trim()); notify('Texto reconhecido. Você pode copiá-lo ou salvar junto ao PDF.');
+    } catch (error) { notify(error.message || 'Falha ao reconhecer o texto.'); }
+    finally { setOcrBusy(false); }
+  };
+  const copyOcrText = async () => { try { await navigator.clipboard.writeText(ocrText); notify('Texto copiado.'); } catch { notify('Não foi possível copiar o texto neste navegador.'); } };
+  const saveEdit = async () => {
+    if (!editingDoc || !editName.trim()) return;
+    const patch = { name: editName.trim().replace(/\.pdf$/i, '') + '.pdf', category: editCategory.trim() || 'Geral' };
+    if (client) { const { error } = await client.from('scanned_documents').update(patch).eq('id', editingDoc.id); if (error) { notify('Não foi possível atualizar o documento.'); return; } }
+    persist(docs.map((doc) => doc.id === editingDoc.id ? { ...doc, ...patch } : doc)); setEditingDoc(null); notify('Documento atualizado.');
+  };
+  const shareSelected = async () => {
+    const chosen = pages.filter((_, index) => selectedPages.includes(index));
+    if (!chosen.length) { notify('Selecione pelo menos uma página.'); return; }
+    try {
+      const { blob } = await generatePdf(chosen, scanFilter); const file = new File([blob], 'Paginas-selecionadas.pdf', { type: 'application/pdf' });
+      if (navigator.share && navigator.canShare?.({ files: [file] })) await navigator.share({ files: [file], title: file.name });
+      else { const link = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = link; anchor.download = file.name; anchor.click(); setTimeout(() => URL.revokeObjectURL(link), 30000); notify('PDF das páginas selecionadas baixado para compartilhar.'); }
+    } catch (error) { if (error.name !== 'AbortError') notify(`Falha ao compartilhar: ${error.message}`); }
+  };
+  const signIn = async (create = false) => {
+    if (!client) { notify('Configure o Supabase primeiro.'); return; }
+    const result = create ? await client.auth.signUp({ email: authEmail, password: authPassword }) : await client.auth.signInWithPassword({ email: authEmail, password: authPassword });
+    if (result.error) notify(result.error.message); else { setSession(result.data.session); notify(create ? 'Conta criada. Confirme o e-mail, se solicitado.' : 'Sessão iniciada.'); }
   };
 
   const download = async (doc) => {
@@ -273,7 +353,8 @@ function App() {
   };
 
   return <div className="shell">
-    <header className="topbar"><div className="brand"><img className="brand-logo" src="/logo-pombal.jpeg" alt="Grupo Pedra do Pombal" /><span>Scanner Pombal</span></div><div className="topright"><span className={`status ${client ? 'online' : ''}`} /><span>{client ? 'Supabase conectado' : 'Salvando neste dispositivo'}</span><button className="iconbtn" title="Configurar Supabase" onClick={openSettings}><Icon name="settings" size={18} /></button></div></header>
+    <header className="topbar"><div className="brand"><img className="brand-logo" src="/logo-pombal.jpeg" alt="Grupo Pedra do Pombal" /><span>Scanner Pombal</span></div><div className="topright"><span className={`status ${client && session ? 'online' : ''}`} /><span>{client ? session ? session.user.email : 'Entre para acessar seus PDFs' : 'Salvando neste dispositivo'}</span>{client && session && <button className="softbtn" onClick={() => client.auth.signOut()}>Sair</button>}<button className="iconbtn" title="Configurar Supabase" onClick={openSettings}><Icon name="settings" size={18} /></button></div></header>
+    {client && !session && <section className="authbar"><strong>Entre para salvar seus documentos na nuvem</strong><input type="email" placeholder="Seu e-mail" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} /><input type="password" placeholder="Senha (mínimo de 6 caracteres)" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} /><button className="primary" onClick={() => signIn(false)}>Entrar</button><button className="softbtn" onClick={() => signIn(true)}>Criar conta</button></section>}
     <section className="hero"><div><div className="eyebrow">Seu scanner de bolso</div><h1>Digitalize. Guarde.<br />Compartilhe.</h1><p>Transforme suas folhas em PDFs organizados em segundos.</p></div><button className="newbtn" onClick={() => fileRef.current?.click()}><Icon name="plus" />Novo escaneamento</button></section>
     <main className="main">
       <section className="card scan-card"><div className="cardhead"><h2>Novo escaneamento</h2><span className="step">{pages.length} {pages.length === 1 ? 'página' : 'páginas'}</span></div>
@@ -281,16 +362,19 @@ function App() {
           <div className="upload-icon"><Icon name="upload" size={24} /></div><strong>Adicione as páginas do documento</strong><p>Fotografe as páginas em sequência ou escolha imagens da galeria</p><div className="drop-actions"><button className="softbtn" onClick={() => fileRef.current?.click()}>Escolher fotos</button><button className="softbtn camera-btn" onClick={openCamera}><Icon name="camera" size={17} />Usar câmera</button></div>
           <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }} />
         </div>
-        {pages.length > 0 && <div className="thumbs">{pages.map((page, index) => <div className="thumb" key={`${page.name}-${index}`}><img src={URL.createObjectURL(page)} alt={`Página ${index + 1}`} /><span>{index + 1}</span><button className="remove-page" aria-label="Remover página" onClick={() => removePage(index)}>×</button><button className="crop-adjust" onClick={() => openCropEditor(page, index)}>Ajustar</button></div>)}</div>}
-        <div className="scan-footer"><span className="hint">{pdfPreparing ? 'Enquadrando e melhorando as páginas…' : pdfBlob ? scanNeedsCheck ? 'Use “Ajustar” na miniatura para alinhar os cantos.' : `Documento A4 pronto · ${pages.length} ${pages.length === 1 ? 'página' : 'páginas'}` : 'Você pode adicionar várias páginas ao mesmo PDF.'}</span><button className="primary" disabled={!pages.length || busy || pdfPreparing} onClick={makePdf}><Icon name="file" />{busy ? 'Salvando PDF…' : pdfPreparing ? 'Preparando…' : pdfBlob ? 'Salvar PDF' : 'Gerar PDF'}</button></div>
+        {pages.length > 0 && <div className="thumbs">{pages.map((page, index) => <div className="thumb" key={`${page.name}-${index}`}><img src={previewImage(page)} alt={`Página ${index + 1}`} /><span>{index + 1}</span><button className="remove-page" aria-label="Remover página" onClick={() => removePage(index)}>×</button><button className="crop-adjust" onClick={() => openCropEditor(page, index)}>Ajustar</button></div>)}</div>}
+        <div className="scan-footer"><span className="hint">{pdfPreparing ? 'Enquadrando e melhorando as páginas…' : pdfBlob ? scanNeedsCheck ? 'Use “Ajustar” na miniatura para alinhar os cantos.' : `Documento A4 pronto · ${pages.length} ${pages.length === 1 ? 'página' : 'páginas'}` : 'Você pode adicionar várias páginas ao mesmo PDF.'}</span><button className="primary" disabled={!pages.length || busy || pdfPreparing} onClick={() => { setSelectedPages(pages.map((_, i) => i)); setPreviewOpen(true); }}><Icon name="file" />{pdfPreparing ? 'Preparando…' : 'Revisar PDF'}</button></div>
       </section>
-      <section className="card history"><div className="history-head"><h2>Seus documentos</h2><span className="count">{docs.length} {docs.length === 1 ? 'arquivo' : 'arquivos'}</span></div><input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar no histórico..." aria-label="Buscar documentos" />
-        <div className="list">{filtered.length ? filtered.map((doc) => <div className="doc" key={doc.id}><div className="pdf-icon"><Icon name="file" /></div><div className="docinfo"><div className="docname" title={doc.name}>{doc.name}</div><div className="docmeta">{doc.pages} {doc.pages === 1 ? 'página' : 'páginas'} · {dateLabel(doc.created_at)}</div></div><div className="docactions"><button className="iconbtn" title="Baixar PDF" onClick={() => download(doc)}><Icon name="download" size={16} /></button><button className="iconbtn" title="Compartilhar no WhatsApp" onClick={() => share(doc)}><Icon name="whatsapp" size={16} /></button></div></div>) : <div className="empty"><div className="upload-icon"><Icon name="file" /></div><strong>{query ? 'Nenhum resultado' : 'Seu histórico começa aqui'}</strong>{query ? 'Tente buscar por outro nome.' : 'Os PDFs que você criar aparecerão aqui.'}</div>}</div>
-        <div className="syncbox"><span className={`status ${client ? 'online' : ''}`} /><div><strong>{client ? 'Sincronizado com Supabase' : 'Histórico neste dispositivo'}</strong><span>{client ? 'Seus PDFs e histórico ficam salvos na nuvem.' : 'Configure o Supabase para acessar seus PDFs online.'}</span></div></div>
+      <section className="card history"><div className="history-head"><h2>Seus documentos</h2><span className="count">{docs.length} {docs.length === 1 ? 'arquivo' : 'arquivos'}</span></div><input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por nome, categoria ou texto..." aria-label="Buscar documentos" />
+        <div className="list">{filtered.length ? filtered.map((doc) => <div className="doc" key={doc.id}><div className="pdf-icon"><Icon name="file" /></div><div className="docinfo"><div className="docname" title={doc.name}>{doc.name}</div><div className="docmeta">{doc.category || 'Geral'} · {doc.pages} {doc.pages === 1 ? 'página' : 'páginas'} · {dateLabel(doc.created_at)}</div></div><div className="docactions"><button className="iconbtn" title="Renomear e categorizar" onClick={() => { setEditingDoc(doc); setEditName(doc.name); setEditCategory(doc.category || 'Geral'); }}>✎</button><button className="iconbtn" title="Baixar PDF" onClick={() => download(doc)}><Icon name="download" size={16} /></button><button className="iconbtn" title="Compartilhar PDF" onClick={() => share(doc)}><Icon name="whatsapp" size={16} /></button></div></div>) : <div className="empty"><div className="upload-icon"><Icon name="file" /></div><strong>{query ? 'Nenhum resultado' : 'Seu histórico começa aqui'}</strong>{query ? 'Tente buscar por outro termo.' : 'Os PDFs que você criar aparecerão aqui.'}</div>}</div>
+        <div className="syncbox"><span className={`status ${client && session ? 'online' : ''}`} /><div><strong>{client ? session ? 'Histórico privado no Supabase' : 'Acesso privado' : 'Histórico neste dispositivo'}</strong><span>{client ? session ? 'Somente sua conta pode acessar seus documentos.' : 'Entre ou crie uma conta para ver e salvar documentos.' : 'Configure o Supabase para sincronizar em uma conta.'}</span></div></div>
       </section>
     </main><div className="footnote">Seus documentos ficam organizados com segurança no seu histórico.</div>
     {cameraOpen && <div className="modalback camera-backdrop"><section className="camera-modal" role="dialog" aria-modal="true" aria-labelledby="camera-title"><header className="camera-head"><div><h2 id="camera-title">Enquadre a folha</h2><p>{pages.length} {pages.length === 1 ? 'página capturada' : 'páginas capturadas'} · mantenha os quatro cantos visíveis</p></div><button className="iconbtn" onClick={closeCamera} aria-label="Fechar câmera">×</button></header>{cameraStream ? <div className="camera-stage" style={{ aspectRatio: cameraAspect, width: `min(100%, ${cameraAspect * 58}vh)` }}><video className="camera-view" ref={videoRef} onLoadedMetadata={(event) => setCameraAspect(event.currentTarget.videoWidth / event.currentTarget.videoHeight)} autoPlay playsInline muted /><div className="crop-frame" style={(() => { const h = 90; const w = Math.min(88, (Math.SQRT1_2 * h) / cameraAspect * 100); return { width: `${w}%`, height: `${h}%`, left: `${(100-w)/2}%`, top: '5%' }; })()}><i /><i /><i /><i /></div></div> : <div className="camera-placeholder"><Icon name="camera" size={34} /><span>{cameraError || 'Iniciando câmera…'}</span></div>}{cameraError && cameraStream && <p className="camera-error">{cameraError}</p>}<div className="camera-help">O scanner localiza as bordas da folha. Depois da captura, toque em Ajustar para alinhar os cantos manualmente se necessário.</div><div className="camera-actions"><button className="softbtn" onClick={closeCamera}>Cancelar</button><button className="primary capture-btn" disabled={!cameraStream} onClick={capturePage}><Icon name="camera" size={18} />Capturar página</button><button className="primary finish-btn" disabled={!pages.length || pdfPreparing || busy} onClick={finishCamera}>{busy ? 'Salvando…' : pdfPreparing ? 'Preparando PDF…' : `Concluir e criar PDF (${pages.length})`}</button></div></section></div>}
-    {cropEditor && <div className="modalback camera-backdrop"><section className="camera-modal crop-editor-modal" role="dialog" aria-modal="true" aria-labelledby="crop-title"><header className="camera-head"><div><h2 id="crop-title">Ajustar enquadramento</h2><p>Arraste os quatro pontos para os cantos do papel.</p></div><button className="iconbtn" onClick={closeCropEditor} aria-label="Fechar ajuste">×</button></header><div className="crop-editor-stage" style={{ aspectRatio: cropEditor.aspect, width: `min(100%, ${cropEditor.aspect * 58}vh)` }}><img src={cropEditor.previewUrl} alt="Foto para ajustar" /><svg ref={cropSvgRef} viewBox="0 0 1000 1000" preserveAspectRatio="none" onPointerMove={moveCropCorner} onPointerUp={() => setDragCorner(null)} onPointerCancel={() => setDragCorner(null)}><polygon points={cropCorners.map(({ x, y }) => `${x},${y}`).join(' ')} />{cropCorners.map(({ x, y }, index) => <circle key={index} cx={x} cy={y} r="24" onPointerDown={(event) => { event.preventDefault(); event.currentTarget.ownerSVGElement.setPointerCapture(event.pointerId); setDragCorner(index); }} />)}</svg></div><div className="camera-help">Posicione cada ponto no canto correspondente da folha. O conteúdo fora do contorno será removido e a perspectiva corrigida.</div><div className="camera-actions"><button className="softbtn" onClick={closeCropEditor}>Cancelar</button><button className="primary" onClick={saveCropCorners}>Aplicar enquadramento</button></div></section></div>}
+    {cropEditor && <div className="modalback camera-backdrop"><section className="camera-modal crop-editor-modal" role="dialog" aria-modal="true" aria-labelledby="crop-title"><header className="camera-head"><div><h2 id="crop-title">Ajustar enquadramento</h2><p>Arraste os quatro pontos para os cantos do papel.</p></div><button className="iconbtn" onClick={closeCropEditor} aria-label="Fechar ajuste">×</button></header><div className="crop-editor-stage" style={{ aspectRatio: cropEditor.aspect, width: `min(100%, ${cropEditor.aspect * 58}vh)` }}><img src={cropEditor.previewUrl} alt="Foto para ajustar" /><svg ref={cropSvgRef} viewBox="0 0 1000 1000" preserveAspectRatio="none" onPointerMove={moveCropCorner} onPointerUp={() => setDragCorner(null)} onPointerCancel={() => setDragCorner(null)}><polygon points={cropCorners.map(({ x, y }) => `${x},${y}`).join(' ')} />{cropCorners.map(({ x, y }, index) => <circle key={index} cx={x} cy={y} r="24" onPointerDown={(event) => { event.preventDefault(); event.currentTarget.ownerSVGElement.setPointerCapture(event.pointerId); setDragCorner(index); }} />)}</svg></div><div className="camera-help">Posicione cada ponto no canto correspondente da folha. O conteúdo fora do contorno será removido e a perspectiva corrigida.</div><div className="camera-actions"><button className="softbtn" onClick={restoreAutoCrop}>Restaurar automático</button><button className="softbtn" onClick={closeCropEditor}>Cancelar</button><button className="primary" onClick={saveCropCorners}>Aplicar enquadramento</button></div></section></div>}
+    {previewOpen && <div className="modalback camera-backdrop"><section className="camera-modal preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title"><header className="camera-head"><div><h2 id="preview-title">Revisar documento</h2><p>Reordene ou remova páginas antes de salvar.</p></div><button className="iconbtn" onClick={() => setPreviewOpen(false)}>×</button></header><div className="preview-fields"><label>Nome do PDF<input value={docName} onChange={(e) => setDocName(e.target.value)} placeholder="Ex.: Relatório de visita" /></label><label>Categoria<input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Geral" /></label><label>Tratamento<select value={scanFilter} onChange={(e) => setScanFilter(e.target.value)}><option value="document">Documento nítido</option><option value="grayscale">Escala de cinza</option><option value="color">Colorido</option></select></label></div><div className="preview-pages">{pages.map((page, index) => <div className="preview-page" key={`${page.name}-${index}`}><img src={previewImage(page)} alt={`Página ${index + 1}`} /><div><label><input type="checkbox" checked={selectedPages.includes(index)} onChange={(e) => setSelectedPages((curr) => e.target.checked ? [...curr, index] : curr.filter((n) => n !== index))} /> Compartilhar</label><button className="softbtn" disabled={index === 0} onClick={() => movePage(index, -1)}>↑</button><button className="softbtn" disabled={index === pages.length - 1} onClick={() => movePage(index, 1)}>↓</button><button className="softbtn" onClick={() => removePage(index)}>Remover</button></div></div>)}</div><div className="preview-toolbar"><button className="softbtn" onClick={recognizeText} disabled={ocrBusy}>{ocrBusy ? 'Reconhecendo…' : 'Reconhecer texto (OCR)'}</button>{ocrText && <button className="softbtn" onClick={copyOcrText}>Copiar texto</button>}<button className="softbtn" onClick={shareSelected}>Compartilhar selecionadas</button></div>{ocrText && <textarea className="ocr-result" value={ocrText} onChange={(e) => setOcrText(e.target.value)} aria-label="Texto reconhecido" />}<div className="preview-toolbar"><span className="hint">{pdfPreparing ? 'Atualizando PDF…' : 'Prévia em papel A4'}</span><button className="primary" disabled={!pages.length || pdfPreparing || busy || (client && !session)} onClick={makePdf}>{busy ? 'Salvando…' : client && !session ? 'Entre para salvar' : 'Salvar no histórico'}</button></div>{pdfBlob && <iframe className="pdf-preview" title="Prévia do documento PDF" src={pdfPreviewUrl} />}</section></div>}
+    {editingDoc && <div className="modalback"><section className="modal"><h2>Editar documento</h2><label>Nome<input value={editName} onChange={(e) => setEditName(e.target.value)} /></label><label>Categoria<input value={editCategory} onChange={(e) => setEditCategory(e.target.value)} /></label><div className="modalbuttons"><button className="softbtn" onClick={() => setEditingDoc(null)}>Cancelar</button><button className="primary" onClick={saveEdit}>Salvar</button></div></section></div>}
+    {modal && <div className="modalback"><section className="modal"><h2>Configurar Supabase</h2><p>Informe a URL do projeto e a chave pública anon.</p><label>URL do projeto<input value={urlField} onChange={(e) => setUrlField(e.target.value)} /></label><label>Chave pública<input value={keyField} onChange={(e) => setKeyField(e.target.value)} /></label><div className="modalbuttons"><button className="softbtn" onClick={() => { setModal(false); disconnect(); }}>Desconectar</button><button className="softbtn" onClick={() => setModal(false)}>Cancelar</button><button className="primary" onClick={saveSettings}>Conectar</button></div></section></div>}
     {toast && <div className="message show" role="status">{toast}</div>}
   </div>;
 }

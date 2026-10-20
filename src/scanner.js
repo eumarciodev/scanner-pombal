@@ -110,7 +110,7 @@ function fallbackThreshold(canvas) {
   return canvas;
 }
 
-export async function scanPage(file) {
+export async function scanPage(file, filter = 'document') {
   const image = await new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file); const element = new Image();
     element.onload = () => { URL.revokeObjectURL(objectUrl); resolve(element); };
@@ -126,10 +126,12 @@ export async function scanPage(file) {
     if (guide) {
       const cropped = document.createElement('canvas'); cropped.width = Math.round(canvas.width * guide.width); cropped.height = Math.round(canvas.height * guide.height);
       cropped.getContext('2d').drawImage(canvas, canvas.width * guide.left, canvas.height * guide.top, cropped.width, cropped.height, 0, 0, cropped.width, cropped.height);
-      fallbackThreshold(cropped);
+      if (filter === 'document') fallbackThreshold(cropped);
+      else if (filter === 'grayscale') grayscaleCanvas(cropped);
       return { data: cropped.toDataURL('image/jpeg', .98), width: cropped.width, height: cropped.height, detected: false };
     }
-    fallbackThreshold(canvas);
+    if (filter === 'document') fallbackThreshold(canvas);
+    else if (filter === 'grayscale') grayscaleCanvas(canvas);
     return { data: canvas.toDataURL('image/jpeg', .98), width: canvas.width, height: canvas.height, detected: false };
   }
 
@@ -155,8 +157,19 @@ export async function scanPage(file) {
       page = source.roi(new cv.Rect(Math.round(source.cols * guide.left), Math.round(source.rows * guide.top), Math.round(source.cols * guide.width), Math.round(source.rows * guide.height)));
     } else page = source.clone();
 
+    if (filter === 'color') {
+      const colorCanvas = document.createElement('canvas'); colorCanvas.width = page.cols; colorCanvas.height = page.rows;
+      cv.imshow(colorCanvas, page);
+      return { data: colorCanvas.toDataURL('image/jpeg', .96), width: colorCanvas.width, height: colorCanvas.height, detected };
+    }
     const gray = new cv.Mat(); const clean = new cv.Mat();
     cv.cvtColor(page, gray, cv.COLOR_RGBA2GRAY);
+    if (filter === 'grayscale') {
+      const grayCanvas = document.createElement('canvas'); grayCanvas.width = gray.cols; grayCanvas.height = gray.rows;
+      cv.imshow(grayCanvas, gray);
+      const result = { data: grayCanvas.toDataURL('image/jpeg', .96), width: grayCanvas.width, height: grayCanvas.height, detected };
+      gray.delete(); clean.delete(); return result;
+    }
     cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
     const blockSize = Math.max(3, Math.min(35, Math.floor(Math.min(gray.cols, gray.rows) / 2) * 2 - 1));
     cv.adaptiveThreshold(gray, clean, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, blockSize, 11);
@@ -166,4 +179,15 @@ export async function scanPage(file) {
     gray.delete(); clean.delete();
     return result;
   } finally { page?.delete(); source.delete(); }
+}
+
+function grayscaleCanvas(canvas) {
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  const frame = context.getImageData(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < frame.data.length; i += 4) {
+    const value = Math.round(.299 * frame.data[i] + .587 * frame.data[i + 1] + .114 * frame.data[i + 2]);
+    frame.data[i] = value; frame.data[i + 1] = value; frame.data[i + 2] = value;
+  }
+  context.putImageData(frame, 0, 0);
+  return canvas;
 }

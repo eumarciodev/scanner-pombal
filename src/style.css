@@ -89,12 +89,33 @@ button, input { font: inherit; } button { cursor: pointer; }
 .camera-help { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 13px 0; }
 .camera-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .finish-btn { margin-left: auto; }
+.authbar { margin: 12px 0; padding: 14px; background: #fff; border: 1px solid var(--line); border-radius: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.authbar strong { margin-right: auto; font-size: 13px; }
+.google-btn { min-height: 40px; border: 1px solid #dadce0; border-radius: 9px; background: #fff; color: #3c4043; padding: 0 13px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; font-weight: 600; }
+.google-btn:hover { background: #f8faff; border-color: #b7c7e6; }
+.google-mark { color: #4285f4; font: 800 18px Arial,sans-serif; }
+.auth-divider { color: var(--muted); font-size: 12px; }
+.authbar input, .preview-fields input, .preview-fields select, .modal input { min-height: 40px; border: 1px solid var(--line); border-radius: 9px; padding: 0 10px; }
+.preview-modal { width: min(860px,100%); max-height: 94vh; }
+.preview-fields { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 10px; margin-bottom: 13px; }
+.preview-fields label, .modal label { display: grid; gap: 6px; font-size: 12px; font-weight: 700; }
+.preview-pages { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow: auto; padding: 2px; }
+.preview-page { display: flex; align-items: center; gap: 12px; padding: 7px; border: 1px solid var(--line); border-radius: 10px; }
+.preview-page img { width: 54px; height: 68px; object-fit: cover; border-radius: 6px; background: #f5f1f0; }
+.preview-page > div { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.preview-page label { display: flex; align-items: center; gap: 5px; margin-right: 8px; font-size: 12px; }
+.preview-page .softbtn, .preview-toolbar .softbtn { padding: 8px 10px; }
+.preview-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.preview-toolbar .hint { margin-right: auto; }
+.pdf-preview { display: block; width: 100%; height: min(45vh, 430px); border: 1px solid var(--line); border-radius: 10px; background: #f3f3f3; }
+.ocr-result { width: 100%; min-height: 90px; border: 1px solid var(--line); border-radius: 10px; padding: 10px; resize: vertical; }
 @media(max-width:760px) {
   .shell { padding: 0 16px; } .topbar { height: 68px; } .brand { font-size: 18px; gap: 8px; } .brand-logo { width: 40px; height: 40px; }
   .topright { font-size: 11px; gap: 7px; } .hero { padding: 34px 0 20px; align-items: flex-start; gap: 16px; flex-direction: column; }
   .hero h1 { font-size: 32px; } .main { grid-template-columns: 1fr; gap: 16px; } .history { min-height: 0; }
   .scan-card, .history { padding: 18px; } .drop { min-height: 200px; } .newbtn { display: none; }
   .scan-footer { align-items: flex-start; flex-direction: column; } .scan-footer .primary { align-self: flex-end; }
+  .preview-fields { grid-template-columns: 1fr; } .authbar input { width: 100%; } .authbar strong { width: 100%; } .auth-divider { width: 100%; text-align: center; }
 }
 @media(max-width:560px) {
   .camera-modal { padding: 16px; } .camera-actions { display: grid; grid-template-columns: 1fr 1fr; }
