@@ -68,7 +68,14 @@ button, input { font: inherit; } button { cursor: pointer; }
 .camera-modal { width: min(680px,100%); max-height: 94vh; overflow: auto; background: #fff; border-radius: 20px; padding: 20px; box-shadow: 0 20px 80px #12241d40; }
 .camera-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .camera-head h2 { font: 700 20px Manrope,sans-serif; margin: 0 0 4px; } .camera-head p { color: var(--muted); font-size: 13px; margin: 0; }
-.camera-view { width: 100%; max-height: 58vh; aspect-ratio: 4/3; object-fit: cover; background: #141414; border-radius: 14px; }
+.camera-stage { position: relative; max-width: 100%; margin: auto; overflow: hidden; border-radius: 14px; background: #141414; }
+.camera-view { display: block; width: 100%; height: 100%; object-fit: fill; background: #141414; }
+.crop-frame { position: absolute; border: 2px solid #fff; border-radius: 3px; box-shadow: 0 0 0 999px #1116; pointer-events: none; }
+.crop-frame i { position: absolute; width: 18px; height: 18px; border-color: #fff; border-style: solid; }
+.crop-frame i:nth-child(1) { left: -3px; top: -3px; border-width: 4px 0 0 4px; }
+.crop-frame i:nth-child(2) { right: -3px; top: -3px; border-width: 4px 4px 0 0; }
+.crop-frame i:nth-child(3) { right: -3px; bottom: -3px; border-width: 0 4px 4px 0; }
+.crop-frame i:nth-child(4) { left: -3px; bottom: -3px; border-width: 0 0 4px 4px; }
 .camera-placeholder { width: 100%; min-height: 250px; border-radius: 14px; background: #f8f3f2; color: var(--muted); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; }
 .camera-error { color: #9e342c; background: #fff2f0; padding: 10px 12px; border-radius: 9px; font-size: 13px; }
 .camera-help { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 13px 0; }
@@ -83,5 +90,5 @@ button, input { font: inherit; } button { cursor: pointer; }
 }
 @media(max-width:560px) {
   .camera-modal { padding: 16px; } .camera-actions { display: grid; grid-template-columns: 1fr 1fr; }
-  .camera-actions .primary { grid-column: 1/-1; grid-row: 1; } .finish-btn { margin-left: 0; } .camera-view { max-height: 52vh; }
+  .camera-actions .finish-btn { grid-column: 1/-1; grid-row: 1; } .camera-actions .capture-btn { grid-column: 1/-1; grid-row: 2; } .finish-btn { margin-left: 0; }
 }
