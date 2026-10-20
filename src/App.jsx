@@ -100,40 +100,38 @@ function App() {
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(video.videoWidth * frameWidth);
     canvas.height = Math.round(video.videoHeight * frameHeight);
-    const context = canvas.getContext('2d');
-    context.filter = 'contrast(1.08) brightness(1.02)';
-    context.drawImage(video, Math.round(video.videoWidth * left), Math.round(video.videoHeight * top), canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+    canvas.getContext('2d').drawImage(video, Math.round(video.videoWidth * left), Math.round(video.videoHeight * top), canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
     canvas.toBlob((blob) => {
       if (!blob) { setCameraError('Não foi possível capturar a foto.'); return; }
-      setPages((current) => [...current, new File([blob], `pagina-${current.length + 1}.jpg`, { type: 'image/jpeg' })]);
+      const photo = new File([blob], `pagina-${pages.length + 1}.jpg`, { type: 'image/jpeg' });
+      setPages((current) => [...current, photo]);
       setCameraError('');
-    }, 'image/jpeg', 0.97);
+    }, 'image/jpeg', 0.98);
   };
   const imageData = (file) => new Promise((resolve, reject) => {
-    const image = new Image();
-    const source = URL.createObjectURL(file);
-    image.onload = () => {
-      const scale = Math.min(1, 3500 / Math.max(image.width, image.height));
-      const canvas = document.createElement('canvas');
-      canvas.width = image.width * scale; canvas.height = image.height * scale;
-      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(source);
-      resolve({ data: canvas.toDataURL('image/jpeg', 0.96), width: canvas.width, height: canvas.height });
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Não foi possível ler uma das imagens.'));
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => resolve({ data: reader.result, width: image.naturalWidth, height: image.naturalHeight, format: file.type === 'image/png' ? 'PNG' : 'JPEG' });
+      image.onerror = () => reject(new Error('Não foi possível abrir uma das imagens.'));
+      image.src = reader.result;
     };
-    image.onerror = () => { URL.revokeObjectURL(source); reject(new Error('Não foi possível ler uma das imagens.')); };
-    image.src = source;
+    reader.readAsDataURL(file);
   });
 
   const generatePdf = async (imageFiles) => {
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
+    let pdf = null;
     for (let index = 0; index < imageFiles.length; index += 1) {
-      if (index) pdf.addPage();
       const image = await imageData(imageFiles[index]);
+      const orientation = image.width > image.height ? 'landscape' : 'portrait';
+      if (!pdf) pdf = new jsPDF({ orientation, unit: 'pt', format: 'a4' });
+      else pdf.addPage('a4', orientation);
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
       const scale = Math.min(pageWidth / image.width, pageHeight / image.height);
       const width = image.width * scale; const height = image.height * scale;
-      pdf.addImage(image.data, 'JPEG', (pageWidth - width) / 2, (pageHeight - height) / 2, width, height);
+      pdf.addImage(image.data, image.format, (pageWidth - width) / 2, (pageHeight - height) / 2, width, height, undefined, 'NONE');
     }
     return pdf.output('blob');
   };
@@ -253,7 +251,7 @@ function App() {
         <div className="syncbox"><span className={`status ${client ? 'online' : ''}`} /><div><strong>{client ? 'Sincronizado com Supabase' : 'Histórico neste dispositivo'}</strong><span>{client ? 'Seus PDFs e histórico ficam salvos na nuvem.' : 'Configure o Supabase para acessar seus PDFs online.'}</span></div></div>
       </section>
     </main><div className="footnote">Seus documentos ficam organizados com segurança no seu histórico.</div>
-    {cameraOpen && <div className="modalback camera-backdrop"><section className="camera-modal" role="dialog" aria-modal="true" aria-labelledby="camera-title"><header className="camera-head"><div><h2 id="camera-title">Enquadre a folha</h2><p>{pages.length} {pages.length === 1 ? 'página capturada' : 'páginas capturadas'} · área dentro do quadro será usada</p></div><button className="iconbtn" onClick={closeCamera} aria-label="Fechar câmera">×</button></header>{cameraStream ? <div className="camera-stage" style={{ aspectRatio: cameraAspect, width: `min(100%, ${cameraAspect * 58}vh)` }}><video className="camera-view" ref={videoRef} onLoadedMetadata={(event) => setCameraAspect(event.currentTarget.videoWidth / event.currentTarget.videoHeight)} autoPlay playsInline muted /><div className="crop-frame" style={(() => { const h = 90; const w = Math.min(88, (Math.SQRT1_2 * h) / cameraAspect * 100); return { width: `${w}%`, height: `${h}%`, left: `${(100-w)/2}%`, top: '5%' }; })()}><i /><i /><i /><i /></div></div> : <div className="camera-placeholder"><Icon name="camera" size={34} /><span>{cameraError || 'Iniciando câmera…'}</span></div>}{cameraError && cameraStream && <p className="camera-error">{cameraError}</p>}<div className="camera-help">Alinhe a folha ao quadro e capture. Cada foto é recortada e convertida em alta qualidade; você pode adicionar várias páginas ao mesmo PDF.</div><div className="camera-actions"><button className="softbtn" onClick={closeCamera}>Cancelar</button><button className="primary capture-btn" disabled={!cameraStream} onClick={capturePage}><Icon name="camera" size={18} />Capturar página</button><button className="primary finish-btn" disabled={!pages.length || pdfPreparing || busy} onClick={finishCamera}>{busy ? 'Salvando…' : pdfPreparing ? 'Preparando PDF…' : `Concluir e criar PDF (${pages.length})`}</button></div></section></div>}
+    {cameraOpen && <div className="modalback camera-backdrop"><section className="camera-modal" role="dialog" aria-modal="true" aria-labelledby="camera-title"><header className="camera-head"><div><h2 id="camera-title">Enquadre a folha</h2><p>{pages.length} {pages.length === 1 ? 'página capturada' : 'páginas capturadas'} · área dentro do quadro será usada</p></div><button className="iconbtn" onClick={closeCamera} aria-label="Fechar câmera">×</button></header>{cameraStream ? <div className="camera-stage" style={{ aspectRatio: cameraAspect, width: `min(100%, ${cameraAspect * 58}vh)` }}><video className="camera-view" ref={videoRef} onLoadedMetadata={(event) => setCameraAspect(event.currentTarget.videoWidth / event.currentTarget.videoHeight)} autoPlay playsInline muted /><div className="crop-frame" style={(() => { const h = 90; const w = Math.min(88, (Math.SQRT1_2 * h) / cameraAspect * 100); return { width: `${w}%`, height: `${h}%`, left: `${(100-w)/2}%`, top: '5%' }; })()}><i /><i /><i /><i /></div></div> : <div className="camera-placeholder"><Icon name="camera" size={34} /><span>{cameraError || 'Iniciando câmera…'}</span></div>}{cameraError && cameraStream && <p className="camera-error">{cameraError}</p>}<div className="camera-help">Alinhe a folha ao quadro para cortar o fundo. A imagem recortada será colocada na página do PDF sem filtros.</div><div className="camera-actions"><button className="softbtn" onClick={closeCamera}>Cancelar</button><button className="primary capture-btn" disabled={!cameraStream} onClick={capturePage}><Icon name="camera" size={18} />Capturar página</button><button className="primary finish-btn" disabled={!pages.length || pdfPreparing || busy} onClick={finishCamera}>{busy ? 'Salvando…' : pdfPreparing ? 'Preparando PDF…' : `Concluir e criar PDF (${pages.length})`}</button></div></section></div>}
     {toast && <div className="message show" role="status">{toast}</div>}
   </div>;
 }
