@@ -38,6 +38,8 @@ function App() {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState('');
   const [cameraStream, setCameraStream] = useState(null);
+  const [pdfBlob, setPdfBlob] = useState(null);
+  const [pdfPreparing, setPdfPreparing] = useState(false);
   const fileRef = useRef(null);
   const cameraRef = useRef(null);
   const videoRef = useRef(null);
@@ -62,6 +64,16 @@ function App() {
     if (videoRef.current && cameraStream) videoRef.current.srcObject = cameraStream;
     return () => cameraStream?.getTracks().forEach((track) => track.stop());
   }, [cameraStream]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!pages.length) { setPdfBlob(null); setPdfPreparing(false); return undefined; }
+    setPdfPreparing(true);
+    generatePdf(pages).then((blob) => { if (!cancelled) setPdfBlob(blob); })
+      .catch((error) => { if (!cancelled) { setPdfBlob(null); notify(`Não foi possível preparar o PDF: ${error.message}`); } })
+      .finally(() => { if (!cancelled) setPdfPreparing(false); });
+    return () => { cancelled = true; };
+  }, [pages]);
 
   const addFiles = (files) => setPages((current) => [...current, ...Array.from(files).filter((file) => file.type.startsWith('image/'))]);
   const removePage = (index) => setPages((current) => current.filter((_, i) => i !== index));
@@ -104,21 +116,25 @@ function App() {
     image.src = source;
   });
 
+  const generatePdf = async (imageFiles) => {
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    for (let index = 0; index < imageFiles.length; index += 1) {
+      if (index) pdf.addPage();
+      const image = await imageData(imageFiles[index]);
+      const scale = Math.min(pageWidth / image.width, pageHeight / image.height);
+      const width = image.width * scale; const height = image.height * scale;
+      pdf.addImage(image.data, 'JPEG', (pageWidth - width) / 2, (pageHeight - height) / 2, width, height);
+    }
+    return pdf.output('blob');
+  };
+
   const makePdf = async () => {
-    if (!pages.length || busy) return;
+    if (!pages.length || busy || pdfPreparing) return;
     setBusy(true);
     try {
-      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      for (let index = 0; index < pages.length; index += 1) {
-        if (index) pdf.addPage();
-        const image = await imageData(pages[index]);
-        const scale = Math.min(pageWidth / image.width, pageHeight / image.height);
-        const width = image.width * scale; const height = image.height * scale;
-        pdf.addImage(image.data, 'JPEG', (pageWidth - width) / 2, (pageHeight - height) / 2, width, height);
-      }
-      const blob = pdf.output('blob');
+      const blob = pdfBlob || await generatePdf(pages);
       const id = crypto.randomUUID();
       const name = `Documento-${new Date().toISOString().slice(0, 10)}-${String(docs.length + 1).padStart(2, '0')}.pdf`;
       const created_at = new Date().toISOString();
@@ -216,14 +232,14 @@ function App() {
           <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }} />
         </div>
         {pages.length > 0 && <div className="thumbs">{pages.map((page, index) => <div className="thumb" key={`${page.name}-${index}`}><img src={URL.createObjectURL(page)} alt={`Página ${index + 1}`} /><span>{index + 1}</span><button aria-label="Remover página" onClick={() => removePage(index)}>×</button></div>)}</div>}
-        <div className="scan-footer"><span className="hint">Você pode adicionar várias páginas ao mesmo PDF.</span><button className="primary" disabled={!pages.length || busy} onClick={makePdf}><Icon name="file" />{busy ? 'Preparando PDF…' : 'Gerar PDF'}</button></div>
+        <div className="scan-footer"><span className="hint">{pdfPreparing ? 'Convertendo as páginas em PDF…' : pdfBlob ? `PDF atualizado automaticamente · ${pages.length} ${pages.length === 1 ? 'página' : 'páginas'}` : 'Você pode adicionar várias páginas ao mesmo PDF.'}</span><button className="primary" disabled={!pages.length || busy || pdfPreparing} onClick={makePdf}><Icon name="file" />{busy ? 'Salvando PDF…' : pdfPreparing ? 'Convertendo…' : pdfBlob ? 'Salvar PDF' : 'Gerar PDF'}</button></div>
       </section>
       <section className="card history"><div className="history-head"><h2>Seus documentos</h2><span className="count">{docs.length} {docs.length === 1 ? 'arquivo' : 'arquivos'}</span></div><input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar no histórico..." aria-label="Buscar documentos" />
         <div className="list">{filtered.length ? filtered.map((doc) => <div className="doc" key={doc.id}><div className="pdf-icon"><Icon name="file" /></div><div className="docinfo"><div className="docname" title={doc.name}>{doc.name}</div><div className="docmeta">{doc.pages} {doc.pages === 1 ? 'página' : 'páginas'} · {dateLabel(doc.created_at)}</div></div><div className="docactions"><button className="iconbtn" title="Baixar PDF" onClick={() => download(doc)}><Icon name="download" size={16} /></button><button className="iconbtn" title="Compartilhar no WhatsApp" onClick={() => share(doc)}><Icon name="whatsapp" size={16} /></button></div></div>) : <div className="empty"><div className="upload-icon"><Icon name="file" /></div><strong>{query ? 'Nenhum resultado' : 'Seu histórico começa aqui'}</strong>{query ? 'Tente buscar por outro nome.' : 'Os PDFs que você criar aparecerão aqui.'}</div>}</div>
         <div className="syncbox"><span className={`status ${client ? 'online' : ''}`} /><div><strong>{client ? 'Sincronizado com Supabase' : 'Histórico neste dispositivo'}</strong><span>{client ? 'Seus PDFs e histórico ficam salvos na nuvem.' : 'Configure o Supabase para acessar seus PDFs online.'}</span></div></div>
       </section>
     </main><div className="footnote">Seus documentos ficam organizados com segurança no seu histórico.</div>
-    {cameraOpen && <div className="modalback camera-backdrop"><section className="camera-modal" role="dialog" aria-modal="true" aria-labelledby="camera-title"><header className="camera-head"><div><h2 id="camera-title">Escanear páginas</h2><p>{pages.length} {pages.length === 1 ? 'página adicionada' : 'páginas adicionadas'} ao documento</p></div><button className="iconbtn" onClick={closeCamera} aria-label="Fechar câmera">×</button></header>{cameraStream ? <video className="camera-view" ref={videoRef} autoPlay playsInline muted /> : <div className="camera-placeholder"><Icon name="camera" size={34} /><span>{cameraError || 'Iniciando câmera…'}</span></div>}{cameraError && cameraStream && <p className="camera-error">{cameraError}</p>}<div className="camera-help">Centralize uma página e capture. Você pode continuar fotografando ou concluir com uma página só.</div><div className="camera-actions"><button className="softbtn" onClick={closeCamera}>Cancelar</button><button className="primary" disabled={!cameraStream} onClick={capturePage}><Icon name="camera" size={18} />Capturar página</button><button className="softbtn finish-btn" onClick={closeCamera}>Concluir ({pages.length})</button></div></section></div>}
+    {cameraOpen && <div className="modalback camera-backdrop"><section className="camera-modal" role="dialog" aria-modal="true" aria-labelledby="camera-title"><header className="camera-head"><div><h2 id="camera-title">Escanear páginas</h2><p>{pages.length} {pages.length === 1 ? 'página adicionada' : 'páginas adicionadas'} ao documento</p></div><button className="iconbtn" onClick={closeCamera} aria-label="Fechar câmera">×</button></header>{cameraStream ? <video className="camera-view" ref={videoRef} autoPlay playsInline muted /> : <div className="camera-placeholder"><Icon name="camera" size={34} /><span>{cameraError || 'Iniciando câmera…'}</span></div>}{cameraError && cameraStream && <p className="camera-error">{cameraError}</p>}<div className="camera-help">Cada foto é convertida automaticamente e adicionada ao PDF. Continue capturando páginas ou conclua com uma página só.</div><div className="camera-actions"><button className="softbtn" onClick={closeCamera}>Cancelar</button><button className="primary" disabled={!cameraStream} onClick={capturePage}><Icon name="camera" size={18} />Capturar página</button><button className="softbtn finish-btn" onClick={closeCamera}>Concluir ({pages.length})</button></div></section></div>}
     {toast && <div className="message show" role="status">{toast}</div>}
   </div>;
 }
