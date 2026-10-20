@@ -1,6 +1,6 @@
 # Scanner Pombal (React)
 
-Aplicação React responsiva para enquadrar e fotografar páginas, colocar a imagem resultante em uma página A4 de PDF sem aplicar filtros, selecionar imagens, montar um arquivo com várias páginas e manter um histórico. Pelo botão de compartilhar, navegadores compatíveis abrem o menu nativo de aplicativos para enviar o próprio PDF; em outros navegadores é oferecido o link público ou o download do arquivo. Sem configurar o Supabase, os PDFs ficam disponíveis no navegador onde foram criados. Com o Supabase configurado, o arquivo e os dados do histórico são enviados para a nuvem.
+Aplicação React responsiva para enquadrar páginas, detectar as bordas, corrigir a perspectiva e limpar o fundo antes de montar um PDF A4 com várias páginas. O processamento usa OpenCV.js carregado sob demanda; se a biblioteca não carregar, o app aplica um tratamento local simplificado e usa o quadro como recorte. Pelo botão de compartilhar, navegadores compatíveis abrem o menu nativo de aplicativos para enviar o próprio PDF; em outros navegadores é oferecido o link público ou o download do arquivo. Sem configurar o Supabase, os PDFs ficam disponíveis no navegador onde foram criados. Com o Supabase configurado, o arquivo e os dados do histórico são enviados para a nuvem.
 
 ## Como abrir
 

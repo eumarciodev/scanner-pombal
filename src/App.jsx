@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { jsPDF } from 'jspdf';
+import { scanPage } from './scanner.js';
 
 const readDocs = () => { try { const value = JSON.parse(localStorage.getItem('folha_docs') || '[]'); return Array.isArray(value) ? value : []; } catch { return []; } };
 const readConfig = () => {
@@ -41,6 +42,7 @@ function App() {
   const [cameraAspect, setCameraAspect] = useState(4 / 3);
   const [pdfBlob, setPdfBlob] = useState(null);
   const [pdfPreparing, setPdfPreparing] = useState(false);
+  const [scanNeedsCheck, setScanNeedsCheck] = useState(false);
   const fileRef = useRef(null);
   const cameraRef = useRef(null);
   const videoRef = useRef(null);
@@ -68,9 +70,9 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!pages.length) { setPdfBlob(null); setPdfPreparing(false); return undefined; }
+    if (!pages.length) { setPdfBlob(null); setPdfPreparing(false); setScanNeedsCheck(false); return undefined; }
     setPdfPreparing(true);
-    generatePdf(pages).then((blob) => { if (!cancelled) setPdfBlob(blob); })
+    generatePdf(pages).then((result) => { if (!cancelled) { setPdfBlob(result.blob); setScanNeedsCheck(result.needsCheck); } })
       .catch((error) => { if (!cancelled) { setPdfBlob(null); notify(`Não foi possível preparar o PDF: ${error.message}`); } })
       .finally(() => { if (!cancelled) setPdfPreparing(false); });
     return () => { cancelled = true; };
@@ -98,32 +100,23 @@ function App() {
     const left = (1 - frameWidth) / 2;
     const top = (1 - frameHeight) / 2;
     const canvas = document.createElement('canvas');
-    canvas.width = Math.round(video.videoWidth * frameWidth);
-    canvas.height = Math.round(video.videoHeight * frameHeight);
-    canvas.getContext('2d').drawImage(video, Math.round(video.videoWidth * left), Math.round(video.videoHeight * top), canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
     canvas.toBlob((blob) => {
       if (!blob) { setCameraError('Não foi possível capturar a foto.'); return; }
       const photo = new File([blob], `pagina-${pages.length + 1}.jpg`, { type: 'image/jpeg' });
+      photo.scanGuide = { left, top, width: frameWidth, height: frameHeight };
       setPages((current) => [...current, photo]);
       setCameraError('');
     }, 'image/jpeg', 0.98);
   };
-  const imageData = (file) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Não foi possível ler uma das imagens.'));
-    reader.onload = () => {
-      const image = new Image();
-      image.onload = () => resolve({ data: reader.result, width: image.naturalWidth, height: image.naturalHeight, format: file.type === 'image/png' ? 'PNG' : 'JPEG' });
-      image.onerror = () => reject(new Error('Não foi possível abrir uma das imagens.'));
-      image.src = reader.result;
-    };
-    reader.readAsDataURL(file);
-  });
-
   const generatePdf = async (imageFiles) => {
     let pdf = null;
+    let needsCheck = false;
     for (let index = 0; index < imageFiles.length; index += 1) {
-      const image = await imageData(imageFiles[index]);
+      const image = await scanPage(imageFiles[index]);
+      if (!image.detected && !imageFiles[index].scanGuide) needsCheck = true;
       const orientation = image.width > image.height ? 'landscape' : 'portrait';
       if (!pdf) pdf = new jsPDF({ orientation, unit: 'pt', format: 'a4' });
       else pdf.addPage('a4', orientation);
@@ -131,16 +124,18 @@ function App() {
       const pageHeight = pdf.internal.pageSize.getHeight();
       const scale = Math.min(pageWidth / image.width, pageHeight / image.height);
       const width = image.width * scale; const height = image.height * scale;
-      pdf.addImage(image.data, image.format, (pageWidth - width) / 2, (pageHeight - height) / 2, width, height, undefined, 'NONE');
+      pdf.addImage(image.data, 'JPEG', (pageWidth - width) / 2, (pageHeight - height) / 2, width, height, undefined, 'FAST');
     }
-    return pdf.output('blob');
+    return { blob: pdf.output('blob'), needsCheck };
   };
 
   const makePdf = async () => {
     if (!pages.length || busy || pdfPreparing) return;
     setBusy(true);
     try {
-      const blob = pdfBlob || await generatePdf(pages);
+      const result = pdfBlob ? { blob: pdfBlob, needsCheck: scanNeedsCheck } : await generatePdf(pages);
+      const blob = result.blob;
+      if (result.needsCheck) notify('Não consegui detectar os cantos de uma imagem. Confira o PDF e, se necessário, tire outra foto com a folha inteira visível.');
       const id = crypto.randomUUID();
       const name = `Documento-${new Date().toISOString().slice(0, 10)}-${String(docs.length + 1).padStart(2, '0')}.pdf`;
       const created_at = new Date().toISOString();
@@ -244,14 +239,14 @@ function App() {
           <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }} />
         </div>
         {pages.length > 0 && <div className="thumbs">{pages.map((page, index) => <div className="thumb" key={`${page.name}-${index}`}><img src={URL.createObjectURL(page)} alt={`Página ${index + 1}`} /><span>{index + 1}</span><button aria-label="Remover página" onClick={() => removePage(index)}>×</button></div>)}</div>}
-        <div className="scan-footer"><span className="hint">{pdfPreparing ? 'Convertendo as páginas em PDF…' : pdfBlob ? `PDF atualizado automaticamente · ${pages.length} ${pages.length === 1 ? 'página' : 'páginas'}` : 'Você pode adicionar várias páginas ao mesmo PDF.'}</span><button className="primary" disabled={!pages.length || busy || pdfPreparing} onClick={makePdf}><Icon name="file" />{busy ? 'Salvando PDF…' : pdfPreparing ? 'Convertendo…' : pdfBlob ? 'Salvar PDF' : 'Gerar PDF'}</button></div>
+        <div className="scan-footer"><span className="hint">{pdfPreparing ? 'Enquadrando e melhorando as páginas…' : pdfBlob ? scanNeedsCheck ? 'Confira o enquadramento da imagem no PDF.' : `Documento A4 pronto · ${pages.length} ${pages.length === 1 ? 'página' : 'páginas'}` : 'Você pode adicionar várias páginas ao mesmo PDF.'}</span><button className="primary" disabled={!pages.length || busy || pdfPreparing} onClick={makePdf}><Icon name="file" />{busy ? 'Salvando PDF…' : pdfPreparing ? 'Preparando…' : pdfBlob ? 'Salvar PDF' : 'Gerar PDF'}</button></div>
       </section>
       <section className="card history"><div className="history-head"><h2>Seus documentos</h2><span className="count">{docs.length} {docs.length === 1 ? 'arquivo' : 'arquivos'}</span></div><input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar no histórico..." aria-label="Buscar documentos" />
         <div className="list">{filtered.length ? filtered.map((doc) => <div className="doc" key={doc.id}><div className="pdf-icon"><Icon name="file" /></div><div className="docinfo"><div className="docname" title={doc.name}>{doc.name}</div><div className="docmeta">{doc.pages} {doc.pages === 1 ? 'página' : 'páginas'} · {dateLabel(doc.created_at)}</div></div><div className="docactions"><button className="iconbtn" title="Baixar PDF" onClick={() => download(doc)}><Icon name="download" size={16} /></button><button className="iconbtn" title="Compartilhar no WhatsApp" onClick={() => share(doc)}><Icon name="whatsapp" size={16} /></button></div></div>) : <div className="empty"><div className="upload-icon"><Icon name="file" /></div><strong>{query ? 'Nenhum resultado' : 'Seu histórico começa aqui'}</strong>{query ? 'Tente buscar por outro nome.' : 'Os PDFs que você criar aparecerão aqui.'}</div>}</div>
         <div className="syncbox"><span className={`status ${client ? 'online' : ''}`} /><div><strong>{client ? 'Sincronizado com Supabase' : 'Histórico neste dispositivo'}</strong><span>{client ? 'Seus PDFs e histórico ficam salvos na nuvem.' : 'Configure o Supabase para acessar seus PDFs online.'}</span></div></div>
       </section>
     </main><div className="footnote">Seus documentos ficam organizados com segurança no seu histórico.</div>
-    {cameraOpen && <div className="modalback camera-backdrop"><section className="camera-modal" role="dialog" aria-modal="true" aria-labelledby="camera-title"><header className="camera-head"><div><h2 id="camera-title">Enquadre a folha</h2><p>{pages.length} {pages.length === 1 ? 'página capturada' : 'páginas capturadas'} · área dentro do quadro será usada</p></div><button className="iconbtn" onClick={closeCamera} aria-label="Fechar câmera">×</button></header>{cameraStream ? <div className="camera-stage" style={{ aspectRatio: cameraAspect, width: `min(100%, ${cameraAspect * 58}vh)` }}><video className="camera-view" ref={videoRef} onLoadedMetadata={(event) => setCameraAspect(event.currentTarget.videoWidth / event.currentTarget.videoHeight)} autoPlay playsInline muted /><div className="crop-frame" style={(() => { const h = 90; const w = Math.min(88, (Math.SQRT1_2 * h) / cameraAspect * 100); return { width: `${w}%`, height: `${h}%`, left: `${(100-w)/2}%`, top: '5%' }; })()}><i /><i /><i /><i /></div></div> : <div className="camera-placeholder"><Icon name="camera" size={34} /><span>{cameraError || 'Iniciando câmera…'}</span></div>}{cameraError && cameraStream && <p className="camera-error">{cameraError}</p>}<div className="camera-help">Alinhe a folha ao quadro para cortar o fundo. A imagem recortada será colocada na página do PDF sem filtros.</div><div className="camera-actions"><button className="softbtn" onClick={closeCamera}>Cancelar</button><button className="primary capture-btn" disabled={!cameraStream} onClick={capturePage}><Icon name="camera" size={18} />Capturar página</button><button className="primary finish-btn" disabled={!pages.length || pdfPreparing || busy} onClick={finishCamera}>{busy ? 'Salvando…' : pdfPreparing ? 'Preparando PDF…' : `Concluir e criar PDF (${pages.length})`}</button></div></section></div>}
+    {cameraOpen && <div className="modalback camera-backdrop"><section className="camera-modal" role="dialog" aria-modal="true" aria-labelledby="camera-title"><header className="camera-head"><div><h2 id="camera-title">Enquadre a folha</h2><p>{pages.length} {pages.length === 1 ? 'página capturada' : 'páginas capturadas'} · mantenha os quatro cantos visíveis</p></div><button className="iconbtn" onClick={closeCamera} aria-label="Fechar câmera">×</button></header>{cameraStream ? <div className="camera-stage" style={{ aspectRatio: cameraAspect, width: `min(100%, ${cameraAspect * 58}vh)` }}><video className="camera-view" ref={videoRef} onLoadedMetadata={(event) => setCameraAspect(event.currentTarget.videoWidth / event.currentTarget.videoHeight)} autoPlay playsInline muted /><div className="crop-frame" style={(() => { const h = 90; const w = Math.min(88, (Math.SQRT1_2 * h) / cameraAspect * 100); return { width: `${w}%`, height: `${h}%`, left: `${(100-w)/2}%`, top: '5%' }; })()}><i /><i /><i /><i /></div></div> : <div className="camera-placeholder"><Icon name="camera" size={34} /><span>{cameraError || 'Iniciando câmera…'}</span></div>}{cameraError && cameraStream && <p className="camera-error">{cameraError}</p>}<div className="camera-help">O scanner localiza as bordas da folha, corrige a perspectiva e limpa o fundo antes de montar cada página A4.</div><div className="camera-actions"><button className="softbtn" onClick={closeCamera}>Cancelar</button><button className="primary capture-btn" disabled={!cameraStream} onClick={capturePage}><Icon name="camera" size={18} />Capturar página</button><button className="primary finish-btn" disabled={!pages.length || pdfPreparing || busy} onClick={finishCamera}>{busy ? 'Salvando…' : pdfPreparing ? 'Preparando PDF…' : `Concluir e criar PDF (${pages.length})`}</button></div></section></div>}
     {toast && <div className="message show" role="status">{toast}</div>}
   </div>;
 }
