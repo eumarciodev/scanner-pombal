@@ -135,7 +135,8 @@ export async function scanPage(file) {
 
   const source = cv.imread(canvas); let page = null; let detected = false;
   try {
-    const found = findPaper(cv, source);
+    const manualCorners = file.scanCorners?.map(({ x, y }) => ({ x: x * source.cols, y: y * source.rows }));
+    const found = manualCorners ? { corners: orderCorners(manualCorners), width: source.cols, height: source.rows } : findPaper(cv, source);
     if (found) {
       const [tl, tr, br, bl] = found.corners;
       const pageWidth = Math.round(Math.max(distance(tl, tr), distance(bl, br)));

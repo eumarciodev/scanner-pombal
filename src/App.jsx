@@ -40,12 +40,16 @@ function App() {
   const [cameraError, setCameraError] = useState('');
   const [cameraStream, setCameraStream] = useState(null);
   const [cameraAspect, setCameraAspect] = useState(4 / 3);
+  const [cropEditor, setCropEditor] = useState(null);
+  const [cropCorners, setCropCorners] = useState([]);
+  const [dragCorner, setDragCorner] = useState(null);
   const [pdfBlob, setPdfBlob] = useState(null);
   const [pdfPreparing, setPdfPreparing] = useState(false);
   const [scanNeedsCheck, setScanNeedsCheck] = useState(false);
   const fileRef = useRef(null);
   const cameraRef = useRef(null);
   const videoRef = useRef(null);
+  const cropSvgRef = useRef(null);
   const client = useMemo(() => config.url && config.key ? createClient(config.url, config.key) : null, [config]);
   const filtered = docs.filter((doc) => doc.name.toLowerCase().includes(query.toLowerCase()));
 
@@ -80,6 +84,45 @@ function App() {
 
   const addFiles = (files) => setPages((current) => [...current, ...Array.from(files).filter((file) => file.type.startsWith('image/'))]);
   const removePage = (index) => setPages((current) => current.filter((_, i) => i !== index));
+  const openCropEditor = (file, index) => {
+    const previewUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      const guide = file.scanGuide || { left: 0.06, top: 0.04, width: 0.88, height: 0.92 };
+      const corners = file.scanCorners || [
+        { x: guide.left * 1000, y: guide.top * 1000 },
+        { x: (guide.left + guide.width) * 1000, y: guide.top * 1000 },
+        { x: (guide.left + guide.width) * 1000, y: (guide.top + guide.height) * 1000 },
+        { x: guide.left * 1000, y: (guide.top + guide.height) * 1000 },
+      ];
+      setCropCorners(corners.map(({ x, y }) => ({ x, y })));
+      setCropEditor({ file, index, previewUrl, aspect: image.naturalWidth / image.naturalHeight });
+    };
+    image.onerror = () => { URL.revokeObjectURL(previewUrl); notify('Não foi possível abrir esta imagem para ajustar.'); };
+    image.src = previewUrl;
+  };
+  const closeCropEditor = () => {
+    if (cropEditor?.previewUrl) URL.revokeObjectURL(cropEditor.previewUrl);
+    setCropEditor(null); setCropCorners([]); setDragCorner(null);
+  };
+  const moveCropCorner = (event) => {
+    if (dragCorner === null || !cropSvgRef.current) return;
+    const bounds = cropSvgRef.current.getBoundingClientRect();
+    const limits = [
+      { x: [0, 500], y: [0, 500] }, { x: [500, 1000], y: [0, 500] },
+      { x: [500, 1000], y: [500, 1000] }, { x: [0, 500], y: [500, 1000] },
+    ][dragCorner];
+    const x = Math.max(limits.x[0], Math.min(limits.x[1], (event.clientX - bounds.left) / bounds.width * 1000));
+    const y = Math.max(limits.y[0], Math.min(limits.y[1], (event.clientY - bounds.top) / bounds.height * 1000));
+    setCropCorners((current) => current.map((point, index) => index === dragCorner ? { x, y } : point));
+  };
+  const saveCropCorners = () => {
+    const { file, index } = cropEditor;
+    file.scanCorners = cropCorners.map(({ x, y }) => ({ x: x / 1000, y: y / 1000 }));
+    setPages((current) => current.map((page, pageIndex) => pageIndex === index ? file : page));
+    closeCropEditor();
+    notify('Enquadramento atualizado. O PDF está sendo corrigido.');
+  };
   const openCamera = async () => {
     setCameraError('');
     if (!navigator.mediaDevices?.getUserMedia) { setCameraError('A câmera ao vivo não está disponível neste navegador. Use “Escolher fotos” para selecionar uma imagem.'); setCameraOpen(true); return; }
@@ -238,15 +281,16 @@ function App() {
           <div className="upload-icon"><Icon name="upload" size={24} /></div><strong>Adicione as páginas do documento</strong><p>Fotografe as páginas em sequência ou escolha imagens da galeria</p><div className="drop-actions"><button className="softbtn" onClick={() => fileRef.current?.click()}>Escolher fotos</button><button className="softbtn camera-btn" onClick={openCamera}><Icon name="camera" size={17} />Usar câmera</button></div>
           <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }} />
         </div>
-        {pages.length > 0 && <div className="thumbs">{pages.map((page, index) => <div className="thumb" key={`${page.name}-${index}`}><img src={URL.createObjectURL(page)} alt={`Página ${index + 1}`} /><span>{index + 1}</span><button aria-label="Remover página" onClick={() => removePage(index)}>×</button></div>)}</div>}
-        <div className="scan-footer"><span className="hint">{pdfPreparing ? 'Enquadrando e melhorando as páginas…' : pdfBlob ? scanNeedsCheck ? 'Confira o enquadramento da imagem no PDF.' : `Documento A4 pronto · ${pages.length} ${pages.length === 1 ? 'página' : 'páginas'}` : 'Você pode adicionar várias páginas ao mesmo PDF.'}</span><button className="primary" disabled={!pages.length || busy || pdfPreparing} onClick={makePdf}><Icon name="file" />{busy ? 'Salvando PDF…' : pdfPreparing ? 'Preparando…' : pdfBlob ? 'Salvar PDF' : 'Gerar PDF'}</button></div>
+        {pages.length > 0 && <div className="thumbs">{pages.map((page, index) => <div className="thumb" key={`${page.name}-${index}`}><img src={URL.createObjectURL(page)} alt={`Página ${index + 1}`} /><span>{index + 1}</span><button className="remove-page" aria-label="Remover página" onClick={() => removePage(index)}>×</button><button className="crop-adjust" onClick={() => openCropEditor(page, index)}>Ajustar</button></div>)}</div>}
+        <div className="scan-footer"><span className="hint">{pdfPreparing ? 'Enquadrando e melhorando as páginas…' : pdfBlob ? scanNeedsCheck ? 'Use “Ajustar” na miniatura para alinhar os cantos.' : `Documento A4 pronto · ${pages.length} ${pages.length === 1 ? 'página' : 'páginas'}` : 'Você pode adicionar várias páginas ao mesmo PDF.'}</span><button className="primary" disabled={!pages.length || busy || pdfPreparing} onClick={makePdf}><Icon name="file" />{busy ? 'Salvando PDF…' : pdfPreparing ? 'Preparando…' : pdfBlob ? 'Salvar PDF' : 'Gerar PDF'}</button></div>
       </section>
       <section className="card history"><div className="history-head"><h2>Seus documentos</h2><span className="count">{docs.length} {docs.length === 1 ? 'arquivo' : 'arquivos'}</span></div><input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar no histórico..." aria-label="Buscar documentos" />
         <div className="list">{filtered.length ? filtered.map((doc) => <div className="doc" key={doc.id}><div className="pdf-icon"><Icon name="file" /></div><div className="docinfo"><div className="docname" title={doc.name}>{doc.name}</div><div className="docmeta">{doc.pages} {doc.pages === 1 ? 'página' : 'páginas'} · {dateLabel(doc.created_at)}</div></div><div className="docactions"><button className="iconbtn" title="Baixar PDF" onClick={() => download(doc)}><Icon name="download" size={16} /></button><button className="iconbtn" title="Compartilhar no WhatsApp" onClick={() => share(doc)}><Icon name="whatsapp" size={16} /></button></div></div>) : <div className="empty"><div className="upload-icon"><Icon name="file" /></div><strong>{query ? 'Nenhum resultado' : 'Seu histórico começa aqui'}</strong>{query ? 'Tente buscar por outro nome.' : 'Os PDFs que você criar aparecerão aqui.'}</div>}</div>
         <div className="syncbox"><span className={`status ${client ? 'online' : ''}`} /><div><strong>{client ? 'Sincronizado com Supabase' : 'Histórico neste dispositivo'}</strong><span>{client ? 'Seus PDFs e histórico ficam salvos na nuvem.' : 'Configure o Supabase para acessar seus PDFs online.'}</span></div></div>
       </section>
     </main><div className="footnote">Seus documentos ficam organizados com segurança no seu histórico.</div>
-    {cameraOpen && <div className="modalback camera-backdrop"><section className="camera-modal" role="dialog" aria-modal="true" aria-labelledby="camera-title"><header className="camera-head"><div><h2 id="camera-title">Enquadre a folha</h2><p>{pages.length} {pages.length === 1 ? 'página capturada' : 'páginas capturadas'} · mantenha os quatro cantos visíveis</p></div><button className="iconbtn" onClick={closeCamera} aria-label="Fechar câmera">×</button></header>{cameraStream ? <div className="camera-stage" style={{ aspectRatio: cameraAspect, width: `min(100%, ${cameraAspect * 58}vh)` }}><video className="camera-view" ref={videoRef} onLoadedMetadata={(event) => setCameraAspect(event.currentTarget.videoWidth / event.currentTarget.videoHeight)} autoPlay playsInline muted /><div className="crop-frame" style={(() => { const h = 90; const w = Math.min(88, (Math.SQRT1_2 * h) / cameraAspect * 100); return { width: `${w}%`, height: `${h}%`, left: `${(100-w)/2}%`, top: '5%' }; })()}><i /><i /><i /><i /></div></div> : <div className="camera-placeholder"><Icon name="camera" size={34} /><span>{cameraError || 'Iniciando câmera…'}</span></div>}{cameraError && cameraStream && <p className="camera-error">{cameraError}</p>}<div className="camera-help">O scanner localiza as bordas da folha, corrige a perspectiva e limpa o fundo antes de montar cada página A4.</div><div className="camera-actions"><button className="softbtn" onClick={closeCamera}>Cancelar</button><button className="primary capture-btn" disabled={!cameraStream} onClick={capturePage}><Icon name="camera" size={18} />Capturar página</button><button className="primary finish-btn" disabled={!pages.length || pdfPreparing || busy} onClick={finishCamera}>{busy ? 'Salvando…' : pdfPreparing ? 'Preparando PDF…' : `Concluir e criar PDF (${pages.length})`}</button></div></section></div>}
+    {cameraOpen && <div className="modalback camera-backdrop"><section className="camera-modal" role="dialog" aria-modal="true" aria-labelledby="camera-title"><header className="camera-head"><div><h2 id="camera-title">Enquadre a folha</h2><p>{pages.length} {pages.length === 1 ? 'página capturada' : 'páginas capturadas'} · mantenha os quatro cantos visíveis</p></div><button className="iconbtn" onClick={closeCamera} aria-label="Fechar câmera">×</button></header>{cameraStream ? <div className="camera-stage" style={{ aspectRatio: cameraAspect, width: `min(100%, ${cameraAspect * 58}vh)` }}><video className="camera-view" ref={videoRef} onLoadedMetadata={(event) => setCameraAspect(event.currentTarget.videoWidth / event.currentTarget.videoHeight)} autoPlay playsInline muted /><div className="crop-frame" style={(() => { const h = 90; const w = Math.min(88, (Math.SQRT1_2 * h) / cameraAspect * 100); return { width: `${w}%`, height: `${h}%`, left: `${(100-w)/2}%`, top: '5%' }; })()}><i /><i /><i /><i /></div></div> : <div className="camera-placeholder"><Icon name="camera" size={34} /><span>{cameraError || 'Iniciando câmera…'}</span></div>}{cameraError && cameraStream && <p className="camera-error">{cameraError}</p>}<div className="camera-help">O scanner localiza as bordas da folha. Depois da captura, toque em Ajustar para alinhar os cantos manualmente se necessário.</div><div className="camera-actions"><button className="softbtn" onClick={closeCamera}>Cancelar</button><button className="primary capture-btn" disabled={!cameraStream} onClick={capturePage}><Icon name="camera" size={18} />Capturar página</button><button className="primary finish-btn" disabled={!pages.length || pdfPreparing || busy} onClick={finishCamera}>{busy ? 'Salvando…' : pdfPreparing ? 'Preparando PDF…' : `Concluir e criar PDF (${pages.length})`}</button></div></section></div>}
+    {cropEditor && <div className="modalback camera-backdrop"><section className="camera-modal crop-editor-modal" role="dialog" aria-modal="true" aria-labelledby="crop-title"><header className="camera-head"><div><h2 id="crop-title">Ajustar enquadramento</h2><p>Arraste os quatro pontos para os cantos do papel.</p></div><button className="iconbtn" onClick={closeCropEditor} aria-label="Fechar ajuste">×</button></header><div className="crop-editor-stage" style={{ aspectRatio: cropEditor.aspect, width: `min(100%, ${cropEditor.aspect * 58}vh)` }}><img src={cropEditor.previewUrl} alt="Foto para ajustar" /><svg ref={cropSvgRef} viewBox="0 0 1000 1000" preserveAspectRatio="none" onPointerMove={moveCropCorner} onPointerUp={() => setDragCorner(null)} onPointerCancel={() => setDragCorner(null)}><polygon points={cropCorners.map(({ x, y }) => `${x},${y}`).join(' ')} />{cropCorners.map(({ x, y }, index) => <circle key={index} cx={x} cy={y} r="24" onPointerDown={(event) => { event.preventDefault(); event.currentTarget.ownerSVGElement.setPointerCapture(event.pointerId); setDragCorner(index); }} />)}</svg></div><div className="camera-help">Posicione cada ponto no canto correspondente da folha. O conteúdo fora do contorno será removido e a perspectiva corrigida.</div><div className="camera-actions"><button className="softbtn" onClick={closeCropEditor}>Cancelar</button><button className="primary" onClick={saveCropCorners}>Aplicar enquadramento</button></div></section></div>}
     {toast && <div className="message show" role="status">{toast}</div>}
   </div>;
 }
